@@ -1,3 +1,4 @@
+import datetime
 from operator import itemgetter
 import random
 
@@ -157,6 +158,7 @@ class ANGCAgent:
         e.append(torch.zeros((1, e_top_size)).to(self.device))
 
         for k in range(self.T_infer):
+
             # for l = 1, ..., L-1
             for l in range(1, self.L):
                 z[l] += self.beta * (- self.infer_leak * z[l] - e[l] + e[l-1] @ E[l-1])
@@ -194,6 +196,11 @@ class ANGCAgent:
                 dEl = dEl / (torch.norm(dEl) + c_eps)
                 E[l].grad = dEl
             optimizer.step()
+
+            W[l] = 2 * W[l] / (torch.norm(W[l]) + c_eps)
+
+            if l < self.L - 1:
+                E[l] = 2 * E[l] / (torch.norm(E[l]) + c_eps)
 
 
     def experience_replay_update(self):
@@ -237,7 +244,8 @@ def run_angc(trial_name, env_name, agent_config):
 
     angc_agent = ANGCAgent(agent_config, device)
 
-    writer = SummaryWriter(f"runs/{trial_name}")
+    curr_dt = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    writer = SummaryWriter(f"runs/{trial_name}-{curr_dt}")
     epistemic_reward_max = 1
 
 
@@ -314,4 +322,4 @@ if __name__ == '__main__':
         'optimizer_cont': 'rmsprop',
         'lr_cont': 0.0005,
     }
-    run_angc('angc/experiment-1', env_name, agent_config)
+    run_angc('angc/experiment-2', env_name, agent_config)
