@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
 
 class ReplayBuffer:
     def __init__(self, capacity):
@@ -221,7 +222,7 @@ def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-def run_angc(env_name, agent_config):
+def run_angc(trial_name, env_name, agent_config):
     seed = 628318
     set_seed(seed)
 
@@ -236,7 +237,7 @@ def run_angc(env_name, agent_config):
 
     angc_agent = ANGCAgent(agent_config, device)
 
-    writer = SummaryWriter()
+    writer = SummaryWriter(f"runs/{trial_name}")
     epistemic_reward_max = 1
 
 
@@ -272,11 +273,12 @@ def run_angc(env_name, agent_config):
                 print(f"Resetting on step {t=}: {terminated=} {truncated=}")
                 obs, info = env.reset()
                 obs = torch.tensor(obs, device=device).unsqueeze_(0)
+                writer.add_scalar('episode/reward', ep_inst_reward, episode)
                 break
 
         angc_agent.update_epsilon()
 
-
+    writer.close()
 
 if __name__ == '__main__':
     # TODO:
@@ -312,4 +314,4 @@ if __name__ == '__main__':
         'optimizer_cont': 'rmsprop',
         'lr_cont': 0.0005,
     }
-    run_angc(env_name, agent_config)
+    run_angc('angc/experiment-1', env_name, agent_config)
