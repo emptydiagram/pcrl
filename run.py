@@ -52,7 +52,7 @@ class ANGCAgent:
         self.device = device
         self.num_actions = num_actions
         self.obs_dim = obs_dim
-        self.num_layers = num_hiddens + 2 # (L+1) in paper notation
+        self.L = num_hiddens + 1
         self.gen_hidden_sizes = gen_hidden_sizes
         self.cont_hidden_sizes = cont_hidden_sizes
         self.T_infer = T_infer
@@ -116,7 +116,7 @@ class ANGCAgent:
     def project(self, obs):
         zbar = obs
         # assume g is identity
-        for i in range(self.num_layers - 2, -1, -1):
+        for i in range(self.L - 1, -1, -1):
             zbar = self.phi(zbar) @ self.W_cont[i]
         return zbar
 
@@ -157,15 +157,15 @@ class ANGCAgent:
 
         for k in range(self.T_infer):
             # for l = 1, ..., L-1
-            for l in range(1, self.num_layers - 1):
+            for l in range(1, self.L):
                 z[l] += self.beta * (- self.infer_leak * z[l] - e[l] + e[l-1] @ E[l-1])
 
             # for l = L - 1, ..., 0
-            for l in range(self.num_layers - 2, -1, -1):
+            for l in range(self.L - 1, -1, -1):
                 zbar = self.phi(z[l+1]) @ W[l]
                 e[l] = (self.phi(z[l]) - zbar) / (2 * self.beta_e)
 
-        return z, e[:self.num_layers-1]
+        return z, e[:self.L]
 
     def infer_and_update(self, x_top, x_bot, circuit_type, c_eps=1e-6):
         assert circuit_type in ['cont', 'gen']
@@ -181,14 +181,14 @@ class ANGCAgent:
         z, e = self.infer(x_top, x_bot, circuit_type)
 
         # update
-        for l in range(self.num_layers - 1):
+        for l in range(self.L):
             optimizer.zero_grad
             # TODO: modulation matrices
             dWl = self.phi(z[l+1]).T @ e[l]
             dWl = dWl / (torch.norm(dWl) + c_eps)
             W[l].grad = dWl
 
-            if l < self.num_layers - 2:
+            if l < self.L - 1:
                 dEl = self.gamma_e * dWl.T
                 dEl = dEl / (torch.norm(dEl) + c_eps)
                 E[l].grad = dEl

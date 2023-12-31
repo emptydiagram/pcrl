@@ -9,7 +9,7 @@ My notation differs in spots from the paper. One major difference is that I use 
 
 | Variable | Description |
 | --- | --- |
-| $K + 1$ | number of layers (different from the paper, which uses $L+1$) |
+| $L + 1$ | number of layers |
 | $T$ | number of interence time steps (paper calls this $K$) |
 | $\gamma_v$ | inference update leak coefficient |
 | $\beta_e$ | prediction error coefficient |
