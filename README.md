@@ -1,6 +1,6 @@
-# (WIP) implementation of Active Neural Generative Coding in PyTorch
+# Overview
 
-TODO
+Attempted PyTorch implementation of Active Neural Generative Coding (ANGC) from [Backprop-Free Reinforcement Learning with Active Neural Generative Coding](https://arxiv.org/abs/2107.07046). This builds on Neural Generative Coding (NGC) from [The neural coding framework for learning generative models](https://www.nature.com/articles/s41467-022-29632-7) and applies it to RL problems.
 
 # Variables
 
@@ -20,7 +20,7 @@ My notation differs in spots from the paper. One major difference is that I use 
 | $z^0$ | bottom sensory vector, clamped to sensory input $z^0 = x^o$ |
 | $z^K$ | top sensory vector, clamped to sensory input $z^K = x^i$ |
 | $W^{\ell} \in \mathbb{R}^{J_{\ell} \times J_{\ell - 1}}$ | (top-down) prediction weights for layer $\ell$, also called the generative weights |
-| $E^{\ell} \in \mathbb{R}^{J_{\ell-1} \times J_{\ell}}$ | (bottom-down) error weights for layer $\ell$ |
+| $E^{\ell} \in \mathbb{R}^{J_{\ell-1} \times J_{\ell}}$ | (bottom-up) error weights for layer $\ell$ |
 | $\phi^\ell$ | activation function for layer $\ell$ |
 | $g^\ell$ | another activation function for layer $\ell$. the paper says they use the identity function $g^\ell = \text{id}[J_\ell]$ |
 | $\bar{z}^\ell$ | top-down prediction vector of $z^\ell$ |
