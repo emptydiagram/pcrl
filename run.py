@@ -28,8 +28,7 @@ class ReplayBuffer:
 
 class ANGCAgent:
     def __init__(self, config, device):
-        num_actions, obs_dim, num_hiddens, \
-        W_gen_hidden_size, E_gen_hidden_size, W_cont_hidden_size, E_cont_hidden_size, \
+        num_actions, obs_dim, gen_hidden_sizes, cont_hidden_sizes, \
         T_infer, beta, infer_leak, beta_e, gamma_e, \
         imp_epistemic, imp_instrumental, \
         phi_name, \
@@ -38,8 +37,7 @@ class ANGCAgent:
         discount_factor, \
         optimizer_gen, lr_gen, optimizer_cont, lr_cont = \
             itemgetter(
-                'num_actions', 'obs_dim', 'num_hiddens',
-                'W_gen_hidden_size', 'E_gen_hidden_size', 'W_cont_hidden_size', 'E_cont_hidden_size',
+                'num_actions', 'obs_dim', 'gen_hidden_sizes', 'cont_hidden_sizes',
                 'T_infer', 'beta', 'infer_leak', 'beta_e', 'gamma_e',
                 'imp_epistemic', 'imp_instrumental',
                 'phi_name',
@@ -49,14 +47,14 @@ class ANGCAgent:
                 'optimizer_gen', 'lr_gen', 'optimizer_cont', 'lr_cont'
             )(config)
 
+        assert len(gen_hidden_sizes) == len(cont_hidden_sizes)
+        num_hiddens = len(gen_hidden_sizes)
         self.device = device
         self.num_actions = num_actions
         self.obs_dim = obs_dim
         self.num_layers = num_hiddens + 2 # (L+1) in paper notation
-        self.W_gen_hidden_size = W_gen_hidden_size
-        self.E_gen_hidden_size = E_gen_hidden_size
-        self.W_cont_hidden_size = W_cont_hidden_size
-        self.E_cont_hidden_size = E_cont_hidden_size
+        self.gen_hidden_sizes = gen_hidden_sizes
+        self.cont_hidden_sizes = cont_hidden_sizes
         self.T_infer = T_infer
         self.beta = beta
         self.infer_leak = infer_leak
@@ -74,23 +72,23 @@ class ANGCAgent:
 
         ### generator params ###
         # contains [W^1, ..., W^L]
-        self.W_gen = ([self.init_weights((W_gen_hidden_size, obs_dim))]
-            + [self.init_weights((W_gen_hidden_size, W_gen_hidden_size)) for _ in range(num_hiddens - 1)]
-            + [self.init_weights((gen_top_size, W_gen_hidden_size))])
+        self.W_gen = ([self.init_weights((gen_hidden_sizes[0], obs_dim))]
+            + [self.init_weights((gen_hidden_sizes[i+1], gen_hidden_sizes[i])) for i in range(num_hiddens - 1)]
+            + [self.init_weights((gen_top_size, gen_hidden_sizes[-1]))])
 
         # contains [E^1, ..., E^L]
-        self.E_gen = ([self.init_weights((obs_dim, E_gen_hidden_size))]
-            + [self.init_weights((E_gen_hidden_size, E_gen_hidden_size)) for _ in range(num_hiddens - 1)]
-            + [self.init_weights((E_gen_hidden_size, gen_top_size))])
+        self.E_gen = ([self.init_weights((obs_dim, gen_hidden_sizes[0]))]
+            + [self.init_weights((gen_hidden_sizes[i], gen_hidden_sizes[i+1])) for i in range(num_hiddens - 1)]
+            + [self.init_weights((gen_hidden_sizes[-1], gen_top_size))])
 
         ### controller params ###
-        self.W_cont = ([self.init_weights((W_cont_hidden_size, num_actions))]
-            + [self.init_weights((W_cont_hidden_size, W_cont_hidden_size)) for _ in range(num_hiddens - 1)]
-            + [self.init_weights((obs_dim, W_cont_hidden_size))])
+        self.W_cont = ([self.init_weights((cont_hidden_sizes[0], num_actions))]
+            + [self.init_weights((cont_hidden_sizes[i+1], cont_hidden_sizes[i])) for i in range(num_hiddens - 1)]
+            + [self.init_weights((obs_dim, cont_hidden_sizes[-1]))])
 
-        self.E_cont = ([self.init_weights((num_actions, E_cont_hidden_size))]
-            + [self.init_weights((E_cont_hidden_size, E_cont_hidden_size)) for _ in range(num_hiddens - 1)]
-            + [self.init_weights((E_cont_hidden_size, obs_dim))])
+        self.E_cont = ([self.init_weights((num_actions, cont_hidden_sizes[0]))]
+            + [self.init_weights((cont_hidden_sizes[i], cont_hidden_sizes[i+1])) for i in range(num_hiddens - 1)]
+            + [self.init_weights((cont_hidden_sizes[-1], obs_dim))])
 
         if phi_name == 'relu':
             self.phi = nn.ReLU()
@@ -143,22 +141,20 @@ class ANGCAgent:
         if circuit_type == 'gen':
             W = self.W_gen
             E = self.E_gen
-            W_hidden_size = self.W_gen_hidden_size
-            E_hidden_size = self.E_gen_hidden_size
+            hidden_sizes = self.gen_hidden_sizes
             e_top_size = self.num_actions + self.obs_dim
         else:
             W = self.W_cont
             E = self.E_cont
-            W_hidden_size = self.W_cont_hidden_size
-            E_hidden_size = self.E_cont_hidden_size
+            hidden_sizes = self.cont_hidden_sizes
             e_top_size = self.obs_dim
 
         # init
         z = [x_bot]
         e = [x_bot - 0.]
-        for i in range(self.num_layers - 2):
-            z.append(torch.zeros((1, W_hidden_size)).to(self.device))
-            e.append(torch.zeros((1, E_hidden_size)).to(self.device))
+        for hidden_size in hidden_sizes:
+            z.append(torch.zeros((1, hidden_size)).to(self.device))
+            e.append(torch.zeros((1, hidden_size)).to(self.device))
         z.append(x_top)
         e.append(torch.zeros((1, e_top_size)).to(self.device))
 
@@ -296,15 +292,12 @@ if __name__ == '__main__':
     agent_config = {
         'num_actions': 2,
         'obs_dim': 4,
-        'num_hiddens': 2,
-        'W_gen_hidden_size': 128,
-        'E_gen_hidden_size': 128,
-        'W_cont_hidden_size': 128,
-        'E_cont_hidden_size': 128,
+        'gen_hidden_sizes': [256, 128],
+        'cont_hidden_sizes': [256, 128],
         'T_infer': 15,
         'beta': 0.1,
         'infer_leak': 0.001,
-        'beta_e': 0.2,
+        'beta_e': 1.0,
         'gamma_e': 0.95,
         'imp_epistemic': 1.0,
         'imp_instrumental': 1.0,
