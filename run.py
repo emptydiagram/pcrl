@@ -76,10 +76,9 @@ class ANGCAgent:
             + [self.init_weights((gen_hidden_sizes[i+1], gen_hidden_sizes[i])) for i in range(num_hiddens - 1)]
             + [self.init_weights((gen_top_size, gen_hidden_sizes[-1]))])
 
-        # contains [E^1, ..., E^L]
+        # contains [E^1, ..., E^{L-1}]
         self.E_gen = ([self.init_weights((obs_dim, gen_hidden_sizes[0]))]
-            + [self.init_weights((gen_hidden_sizes[i], gen_hidden_sizes[i+1])) for i in range(num_hiddens - 1)]
-            + [self.init_weights((gen_hidden_sizes[-1], gen_top_size))])
+            + [self.init_weights((gen_hidden_sizes[i], gen_hidden_sizes[i+1])) for i in range(num_hiddens - 1)])
 
         ### controller params ###
         self.W_cont = ([self.init_weights((cont_hidden_sizes[0], num_actions))]
@@ -87,8 +86,7 @@ class ANGCAgent:
             + [self.init_weights((obs_dim, cont_hidden_sizes[-1]))])
 
         self.E_cont = ([self.init_weights((num_actions, cont_hidden_sizes[0]))]
-            + [self.init_weights((cont_hidden_sizes[i], cont_hidden_sizes[i+1])) for i in range(num_hiddens - 1)]
-            + [self.init_weights((cont_hidden_sizes[-1], obs_dim))])
+            + [self.init_weights((cont_hidden_sizes[i], cont_hidden_sizes[i+1])) for i in range(num_hiddens - 1)])
 
         if phi_name == 'relu':
             self.phi = nn.ReLU()
@@ -135,7 +133,6 @@ class ANGCAgent:
 
         return action
 
-    # only called for generator circuit. see infer_and_update for generic version
     def infer(self, x_top, x_bot, circuit_type):
         assert circuit_type in ['cont', 'gen']
         if circuit_type == 'gen':
@@ -159,8 +156,8 @@ class ANGCAgent:
         e.append(torch.zeros((1, e_top_size)).to(self.device))
 
         for k in range(self.T_infer):
-            # for l = 1, ..., L
-            for l in range(1, self.num_layers):
+            # for l = 1, ..., L-1
+            for l in range(1, self.num_layers - 1):
                 z[l] += self.beta * (- self.infer_leak * z[l] - e[l] + e[l-1] @ E[l-1])
 
             # for l = L - 1, ..., 0
@@ -189,10 +186,12 @@ class ANGCAgent:
             # TODO: modulation matrices
             dWl = self.phi(z[l+1]).T @ e[l]
             dWl = dWl / (torch.norm(dWl) + c_eps)
-            dEl = self.gamma_e * dWl.T
-            dEl = dEl / (torch.norm(dEl) + c_eps)
             W[l].grad = dWl
-            E[l].grad = dEl
+
+            if l < self.num_layers - 2:
+                dEl = self.gamma_e * dWl.T
+                dEl = dEl / (torch.norm(dEl) + c_eps)
+                E[l].grad = dEl
             optimizer.step()
 
 
