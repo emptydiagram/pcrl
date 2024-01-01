@@ -99,15 +99,16 @@ class ANGCAgent:
 
         self.replay_buffer = ReplayBuffer(replay_buffer_size)
 
+        # perform gradient ascent
         if optimizer_gen == 'adam':
-            self.optimizer_gen = torch.optim.Adam(self.W_gen + self.E_gen, lr=lr_gen)
+            self.optimizer_gen = torch.optim.Adam(self.W_gen + self.E_gen, lr=lr_gen, maximize=True)
         else:
             raise Exception(f'optimizer_gen {optimizer_gen} not supported')
 
         if optimizer_cont == 'rmsprop':
-            self.optimizer_cont = torch.optim.RMSprop(self.W_cont + self.E_cont, lr=lr_cont)
+            self.optimizer_cont = torch.optim.RMSprop(self.W_cont + self.E_cont, lr=lr_cont, maximize=True)
         elif optimizer_cont == 'adam':
-            self.optimizer_cont = torch.optim.Adam(self.W_cont + self.E_cont, lr=lr_cont)
+            self.optimizer_cont = torch.optim.Adam(self.W_cont + self.E_cont, lr=lr_cont, maximize=True)
         else:
             raise Exception(f'optimizer_cont {optimizer_cont} not supported')
 
@@ -230,6 +231,8 @@ def set_seed(seed):
     torch.manual_seed(seed)
 
 def run_angc(trial_name, env_name, agent_config):
+    write_to_tensorboard = True
+
     seed = 628318
     set_seed(seed)
 
@@ -245,7 +248,9 @@ def run_angc(trial_name, env_name, agent_config):
     angc_agent = ANGCAgent(agent_config, device)
 
     curr_dt = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    writer = SummaryWriter(f"runs/{trial_name}-{curr_dt}")
+
+    if write_to_tensorboard:
+        writer = SummaryWriter(f"runs/expt-{curr_dt}-{trial_name}")
     epistemic_reward_max = 1
 
 
@@ -281,12 +286,14 @@ def run_angc(trial_name, env_name, agent_config):
                 print(f"Resetting on step {t=}: {terminated=} {truncated=}")
                 obs, info = env.reset()
                 obs = torch.tensor(obs, device=device).unsqueeze_(0)
-                writer.add_scalar('episode/reward', ep_inst_reward, episode)
+                if write_to_tensorboard:
+                    writer.add_scalar('episode/reward', ep_inst_reward, episode)
                 break
 
         angc_agent.update_epsilon()
 
-    writer.close()
+    if write_to_tensorboard:
+        writer.close()
 
 if __name__ == '__main__':
     # TODO:
@@ -322,4 +329,4 @@ if __name__ == '__main__':
         'optimizer_cont': 'rmsprop',
         'lr_cont': 0.0005,
     }
-    run_angc('angc/experiment-2', env_name, agent_config)
+    run_angc('angc/asc-beta_e=10', env_name, agent_config)
