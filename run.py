@@ -29,7 +29,7 @@ class ReplayBuffer:
         return len(self.buffer)
 
 class ANGCAgent:
-    def __init__(self, config, device):
+    def __init__(self, config, device, tb_writer=None):
         num_actions, obs_dim, gen_hidden_sizes, cont_hidden_sizes, \
         T_infer, beta, infer_leak, beta_e, gamma_e, \
         imp_epistemic, imp_instrumental, \
@@ -112,6 +112,9 @@ class ANGCAgent:
         else:
             raise Exception(f'optimizer_cont {optimizer_cont} not supported')
 
+        self.tb_writer = tb_writer
+
+
 
     def init_weights(self, shape, stddev=0.025):
         return torch.empty(shape).normal_(mean=0, std=stddev).to(self.device)
@@ -171,7 +174,7 @@ class ANGCAgent:
 
         return z, e[:self.L]
 
-    def infer_and_update(self, x_top, x_bot, circuit_type, c_eps=1e-6):
+    def infer_and_update(self, x_top, x_bot, circuit_type, perform_write=False, c_eps=1e-6):
         assert circuit_type in ['cont', 'gen']
         if circuit_type == 'gen':
             W = self.W_gen
@@ -183,6 +186,18 @@ class ANGCAgent:
             optimizer = self.optimizer_cont
 
         z, e = self.infer(x_top, x_bot, circuit_type)
+
+        if perform_write and self.tb_writer is not None:
+            if not(hasattr(self, 'update_step')):
+                self.update_step = 0
+
+            for l in range(len(z)):
+                self.tb_writer.add_scalar(f'update-step/{circuit_type}/z-{l}', torch.mean(z[l]).item(), self.update_step)
+
+            for l in range(len(e)):
+                self.tb_writer.add_scalar(f'update-step/{circuit_type}/e-{l}', torch.mean(e[l]).item(), self.update_step)
+
+            self.update_step += 1
 
         # update
         for l in range(self.L):
@@ -211,15 +226,17 @@ class ANGCAgent:
 
         # sample mini batch from replay buffer and call infer_and_update for both controller and generator
         batch = self.replay_buffer.sample(self.replay_sample_batch_size)
-        for (obs, action, reward, obs_next, is_terminal) in batch:
+        for idx, (obs, action, reward, obs_next, is_terminal) in enumerate(batch):
             target_scalar = reward if is_terminal else reward + self.discount_factor * torch.max(self.project(obs_next)).item()
             action_oh = F.one_hot(torch.tensor(action), self.num_actions).unsqueeze_(0).to(self.device)
             target = target_scalar * action_oh + (1 - action_oh) * self.project(obs)
 
-            self.infer_and_update(obs, target, 'cont')
+            perform_write = idx == self.replay_sample_batch_size - 1
+
+            self.infer_and_update(obs, target, 'cont', perform_write=perform_write)
 
             act_obs = torch.cat((action_oh, obs), dim=1).to(self.device)
-            self.infer_and_update(act_obs, obs_next, 'gen')
+            self.infer_and_update(act_obs, obs_next, 'gen', perform_write=perform_write)
 
     def update_epsilon(self):
         self.eps = max(self.eps * self.eps_decay, self.eps_min)
@@ -245,12 +262,15 @@ def run_angc(trial_name, env_name, agent_config):
     obs, info = env.reset(seed=seed)
     num_actions = env.action_space.n
 
-    angc_agent = ANGCAgent(agent_config, device)
-
-    curr_dt = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-
     if write_to_tensorboard:
+        curr_dt = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         writer = SummaryWriter(f"runs/expt-{curr_dt}-{trial_name}")
+    else:
+        writer = None
+
+    angc_agent = ANGCAgent(agent_config, device, writer)
+
+
     epistemic_reward_max = 1
 
 
@@ -260,6 +280,7 @@ def run_angc(trial_name, env_name, agent_config):
         obs = torch.tensor(obs, device=device).unsqueeze_(0)
 
         ep_inst_reward = 0
+        ep_total_reward = 0
 
         for t in range(num_max_steps):
             action = angc_agent.act(obs)
@@ -276,6 +297,8 @@ def run_angc(trial_name, env_name, agent_config):
             reward_epistemic /= epistemic_reward_max
             reward = angc_agent.imp_epistemic * reward_epistemic + angc_agent.imp_instrumental * reward_instrumental
 
+            ep_total_reward += reward
+
             is_terminal = terminated or truncated
             angc_agent.replay_buffer.add((obs, action, reward, obs_next, is_terminal))
 
@@ -289,6 +312,8 @@ def run_angc(trial_name, env_name, agent_config):
                 if write_to_tensorboard:
                     writer.add_scalar('episode/reward', ep_inst_reward, episode)
                 break
+
+        print(f"Episode {episode} total reward: {ep_total_reward}, instrumental reward: {ep_inst_reward}")
 
         angc_agent.update_epsilon()
 
@@ -313,7 +338,7 @@ if __name__ == '__main__':
         'T_infer': 15,
         'beta': 0.1,
         'infer_leak': 0.001,
-        'beta_e': 1.0,
+        'beta_e': 0.1,
         'gamma_e': 0.95,
         'imp_epistemic': 1.0,
         'imp_instrumental': 1.0,
@@ -329,4 +354,4 @@ if __name__ == '__main__':
         'optimizer_cont': 'rmsprop',
         'lr_cont': 0.0005,
     }
-    run_angc('angc/asc-beta_e=10', env_name, agent_config)
+    run_angc('angc/asc-beta_e=0.1', env_name, agent_config)
