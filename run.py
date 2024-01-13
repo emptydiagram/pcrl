@@ -245,17 +245,24 @@ class ANGCAgent:
 
         # sample mini batch from replay buffer and call infer_and_update for both controller and generator
         batch = self.replay_buffer.sample(self.replay_sample_batch_size)
-        for idx, (obs, action, reward, obs_next, is_terminal) in enumerate(batch):
-            target_scalar = reward if is_terminal else reward + self.discount_factor * torch.max(self.ngc_cont.project(obs_next)).item()
-            action_oh = F.one_hot(torch.tensor(action), self.num_actions).unsqueeze_(0).to(self.device)
-            target = target_scalar * action_oh + (1 - action_oh) * self.ngc_cont.project(obs)
 
-            # perform_write = idx == self.replay_sample_batch_size - 1
+        obs, actions, rewards, obs_next, is_terminals = zip(*batch)
 
-            self.infer_and_update(obs, target, 'cont', perform_write=False)
+        obs = torch.vstack(obs).to(self.device)
+        actions = torch.vstack(actions).to(self.device)
+        rewards = torch.vstack(rewards).to(self.device)
+        obs_next = torch.vstack(obs_next).to(self.device)
+        is_terminals = torch.tensor(is_terminals, dtype=torch.float32).unsqueeze_(1).to(self.device)
+        obs_next_project = self.ngc_cont.project(obs_next)
+        max_future_reward = torch.max(obs_next_project, dim=1, keepdim=True).values
+        target_scalars = rewards * is_terminals + (1 - is_terminals) * (rewards + self.discount_factor * max_future_reward)
 
-            act_obs = torch.cat((action_oh, obs), dim=1).to(self.device)
-            self.infer_and_update(act_obs, obs_next, 'gen', perform_write=False)
+        obs_project = self.ngc_cont.project(obs)
+
+        targets = target_scalars * actions + (1 - actions) * obs_project
+        self.infer_and_update(obs, targets, 'cont', perform_write=False)
+        actions_obs = torch.hstack((actions, obs)).to(self.device)
+        self.infer_and_update(actions_obs, obs_next, 'gen', perform_write=False)
 
     def update_epsilon(self):
         self.eps = max(self.eps * self.eps_decay, self.eps_min)
@@ -319,7 +326,7 @@ def run_angc(trial_name, env_name, agent_config):
             ep_total_reward += reward
 
             is_terminal = terminated or truncated
-            angc_agent.replay_buffer.add((obs, action, reward, obs_next, is_terminal))
+            angc_agent.replay_buffer.add((obs, action_oh, reward, obs_next, is_terminal))
 
             angc_agent.experience_replay_update()
 
@@ -365,7 +372,7 @@ if __name__ == '__main__':
         'eps_init': 1.0,
         'eps_decay': 0.97,
         'eps_min': 0.05,
-        'replay_buffer_size': 100000,
+        'replay_buffer_size': 500000,
         'replay_sample_batch_size': 256,
         'discount_factor': 0.99,
         'optimizer_gen': 'adam',
