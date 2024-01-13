@@ -72,12 +72,11 @@ class NGC:
             z.append(torch.zeros([batch_size, self.dims[l]], device=self.device))
             e.append(torch.zeros([batch_size, self.dims[l]], device=self.device))
         z.append(x_top)
-        e.append(torch.zeros([batch_size, self.dims[self.L]], device=self.device))
 
         mu = [None for _ in range(self.L)]
 
         for _ in range(K):
-            for i in range(1, self.L + 1):
+            for i in range(1, self.L):
                 di = e[i-1] @ self.E[i-1] - e[i]
                 z[i] += self.beta * (-self.gamma * z[i] + di)
 
