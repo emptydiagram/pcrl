@@ -1,3 +1,5 @@
+from ngc import NGC
+
 import datetime
 from operator import itemgetter
 import random
@@ -28,10 +30,11 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
+
 class ANGCAgent:
     def __init__(self, config, device, tb_writer=None):
         num_actions, obs_dim, gen_hidden_sizes, cont_hidden_sizes, \
-        T_infer, beta, infer_leak, beta_e, gamma_e, \
+        K, beta, infer_leak, beta_e, gamma_e, \
         imp_epistemic, imp_instrumental, \
         phi_name, \
         eps_init, eps_decay, eps_min, \
@@ -40,7 +43,7 @@ class ANGCAgent:
         optimizer_gen, lr_gen, optimizer_cont, lr_cont = \
             itemgetter(
                 'num_actions', 'obs_dim', 'gen_hidden_sizes', 'cont_hidden_sizes',
-                'T_infer', 'beta', 'infer_leak', 'beta_e', 'gamma_e',
+                'K', 'beta', 'infer_leak', 'beta_e', 'gamma_e',
                 'imp_epistemic', 'imp_instrumental',
                 'phi_name',
                 'eps_init', 'eps_decay', 'eps_min',
@@ -57,10 +60,10 @@ class ANGCAgent:
         self.L = num_hiddens + 1
         self.gen_hidden_sizes = gen_hidden_sizes
         self.cont_hidden_sizes = cont_hidden_sizes
-        self.T_infer = T_infer
+        self.K = K
         self.beta = beta
         self.infer_leak = infer_leak
-        self.beta_e = beta_e
+        self.beta_e = beta_e # TODO: use this
         self.gamma_e = gamma_e
         self.imp_epistemic = imp_epistemic
         self.imp_instrumental = imp_instrumental
@@ -74,21 +77,26 @@ class ANGCAgent:
 
         ### generator params ###
         # contains [W^1, ..., W^L]
-        self.W_gen = ([self.init_weights((gen_hidden_sizes[0], obs_dim))]
-            + [self.init_weights((gen_hidden_sizes[i+1], gen_hidden_sizes[i])) for i in range(num_hiddens - 1)]
-            + [self.init_weights((gen_top_size, gen_hidden_sizes[-1]))])
+        # self.W_gen = ([self.init_weights((gen_hidden_sizes[0], obs_dim))]
+        #     + [self.init_weights((gen_hidden_sizes[i+1], gen_hidden_sizes[i])) for i in range(num_hiddens - 1)]
+        #     + [self.init_weights((gen_top_size, gen_hidden_sizes[-1]))])
 
-        # contains [E^1, ..., E^{L-1}]
-        self.E_gen = ([self.init_weights((obs_dim, gen_hidden_sizes[0]))]
-            + [self.init_weights((gen_hidden_sizes[i], gen_hidden_sizes[i+1])) for i in range(num_hiddens - 1)])
+        # # contains [E^1, ..., E^{L-1}]
+        # self.E_gen = ([self.init_weights((obs_dim, gen_hidden_sizes[0]))]
+        #     + [self.init_weights((gen_hidden_sizes[i], gen_hidden_sizes[i+1])) for i in range(num_hiddens - 1)])
 
-        ### controller params ###
-        self.W_cont = ([self.init_weights((cont_hidden_sizes[0], num_actions))]
-            + [self.init_weights((cont_hidden_sizes[i+1], cont_hidden_sizes[i])) for i in range(num_hiddens - 1)]
-            + [self.init_weights((obs_dim, cont_hidden_sizes[-1]))])
+        # ### controller params ###
+        # self.W_cont = ([self.init_weights((cont_hidden_sizes[0], num_actions))]
+        #     + [self.init_weights((cont_hidden_sizes[i+1], cont_hidden_sizes[i])) for i in range(num_hiddens - 1)]
+        #     + [self.init_weights((obs_dim, cont_hidden_sizes[-1]))])
 
-        self.E_cont = ([self.init_weights((num_actions, cont_hidden_sizes[0]))]
-            + [self.init_weights((cont_hidden_sizes[i], cont_hidden_sizes[i+1])) for i in range(num_hiddens - 1)])
+        # self.E_cont = ([self.init_weights((num_actions, cont_hidden_sizes[0]))]
+        #     + [self.init_weights((cont_hidden_sizes[i], cont_hidden_sizes[i+1])) for i in range(num_hiddens - 1)])
+
+        self.ngc_gen = NGC(self.L, [obs_dim] + gen_hidden_sizes + [gen_top_size], weight_stddev=0.025,
+                           beta=beta, gamma=self.infer_leak, err_update_coeff=self.gamma_e, device=device)
+        self.ngc_cont = NGC(self.L, [num_actions] + cont_hidden_sizes + [obs_dim], weight_stddev=0.025,
+                            beta=beta, gamma=self.infer_leak, err_update_coeff=self.gamma_e, device=device)
 
         if phi_name == 'relu':
             self.phi = nn.ReLU()
@@ -101,14 +109,14 @@ class ANGCAgent:
 
         # perform gradient ascent
         if optimizer_gen == 'adam':
-            self.optimizer_gen = torch.optim.Adam(self.W_gen + self.E_gen, lr=lr_gen, maximize=True)
+            self.optimizer_gen = torch.optim.Adam(self.ngc_gen.parameters(), lr=lr_gen, maximize=False)
         else:
             raise Exception(f'optimizer_gen {optimizer_gen} not supported')
 
         if optimizer_cont == 'rmsprop':
-            self.optimizer_cont = torch.optim.RMSprop(self.W_cont + self.E_cont, lr=lr_cont, maximize=True)
+            self.optimizer_cont = torch.optim.RMSprop(self.ngc_cont.parameters(), lr=lr_cont, maximize=False)
         elif optimizer_cont == 'adam':
-            self.optimizer_cont = torch.optim.Adam(self.W_cont + self.E_cont, lr=lr_cont, maximize=True)
+            self.optimizer_cont = torch.optim.Adam(self.ngc_cont.parameters(), lr=lr_cont, maximize=False)
         else:
             raise Exception(f'optimizer_cont {optimizer_cont} not supported')
 
@@ -116,15 +124,15 @@ class ANGCAgent:
 
 
 
-    def init_weights(self, shape, stddev=0.025):
-        return torch.empty(shape).normal_(mean=0, std=stddev).to(self.device)
+    # def init_weights(self, shape, stddev=0.025):
+    #     return torch.empty(shape).normal_(mean=0, std=stddev).to(self.device)
 
-    def project(self, obs):
-        zbar = obs
-        # assume g is identity
-        for i in range(self.L - 1, -1, -1):
-            zbar = self.phi(zbar) @ self.W_cont[i]
-        return zbar
+    # def project(self, obs):
+    #     zbar = obs
+    #     # assume g is identity
+    #     for i in range(self.L - 1, -1, -1):
+    #         zbar = self.phi(zbar) @ self.W_cont[i]
+    #     return zbar
 
 
     def act(self, obs):
@@ -134,89 +142,100 @@ class ANGCAgent:
         if p < self.eps:
             action = random.randint(0,self.num_actions-1)
         else:
-            rew_pred = self.project(obs)
+            rew_pred = self.ngc_cont.project(obs)
             action = torch.argmax(rew_pred).item()
 
         return action
 
-    def infer(self, x_top, x_bot, circuit_type):
-        assert circuit_type in ['cont', 'gen']
-        if circuit_type == 'gen':
-            W = self.W_gen
-            E = self.E_gen
-            hidden_sizes = self.gen_hidden_sizes
-            e_top_size = self.num_actions + self.obs_dim
-        else:
-            W = self.W_cont
-            E = self.E_cont
-            hidden_sizes = self.cont_hidden_sizes
-            e_top_size = self.obs_dim
+    # def infer(self, x_top, x_bot, circuit_type):
+    #     assert circuit_type in ['cont', 'gen']
+    #     if circuit_type == 'gen':
+    #         W = self.W_gen
+    #         E = self.E_gen
+    #         hidden_sizes = self.gen_hidden_sizes
+    #         e_top_size = self.num_actions + self.obs_dim
+    #     else:
+    #         W = self.W_cont
+    #         E = self.E_cont
+    #         hidden_sizes = self.cont_hidden_sizes
+    #         e_top_size = self.obs_dim
 
-        # init
-        z = [x_bot]
-        e = [x_bot - 0.]
-        for hidden_size in hidden_sizes:
-            z.append(torch.zeros((1, hidden_size)).to(self.device))
-            e.append(torch.zeros((1, hidden_size)).to(self.device))
-        z.append(x_top)
-        e.append(torch.zeros((1, e_top_size)).to(self.device))
+    #     # init
+    #     z = [x_bot]
+    #     e = [x_bot - 0.]
+    #     for hidden_size in hidden_sizes:
+    #         z.append(torch.zeros((1, hidden_size)).to(self.device))
+    #         e.append(torch.zeros((1, hidden_size)).to(self.device))
+    #     z.append(x_top)
+    #     e.append(torch.zeros((1, e_top_size)).to(self.device))
 
-        for k in range(self.T_infer):
+    #     for k in range(self.T_infer):
 
-            # for l = 1, ..., L-1
-            for l in range(1, self.L):
-                z[l] += self.beta * (- self.infer_leak * z[l] - e[l] + e[l-1] @ E[l-1])
+    #         # for l = 1, ..., L-1
+    #         for l in range(1, self.L):
+    #             z[l] += self.beta * (- self.infer_leak * z[l] - e[l] + e[l-1] @ E[l-1])
 
-            # for l = L - 1, ..., 0
-            for l in range(self.L - 1, -1, -1):
-                zbar = self.phi(z[l+1]) @ W[l]
-                e[l] = (self.phi(z[l]) - zbar) / (2 * self.beta_e)
+    #         # for l = L - 1, ..., 0
+    #         for l in range(self.L - 1, -1, -1):
+    #             zbar = self.phi(z[l+1]) @ W[l]
+    #             e[l] = (self.phi(z[l]) - zbar) / (2 * self.beta_e)
 
-        return z, e[:self.L]
+    #     return z, e[:self.L]
 
     def infer_and_update(self, x_top, x_bot, circuit_type, perform_write=False, c_eps=1e-6):
         assert circuit_type in ['cont', 'gen']
         if circuit_type == 'gen':
-            W = self.W_gen
-            E = self.E_gen
+            # W = self.W_gen
+            # E = self.E_gen
             optimizer = self.optimizer_gen
+            ngc_circuit = self.ngc_gen
         else:
-            W = self.W_cont
-            E = self.E_cont
+            # W = self.W_cont
+            # E = self.E_cont
             optimizer = self.optimizer_cont
+            ngc_circuit = self.ngc_cont
 
-        z, e = self.infer(x_top, x_bot, circuit_type)
+        ngc_circuit.infer(x_top, x_bot)
+        optimizer.zero_grad()
+        ngc_circuit.calc_updates()
+        optimizer.step()
+        ngc_circuit.clip_weights()
 
-        if perform_write and self.tb_writer is not None:
-            if not(hasattr(self, 'update_step')):
-                self.update_step = 0
 
-            for l in range(len(z)):
-                self.tb_writer.add_scalar(f'update-step/{circuit_type}/z-{l}', torch.mean(z[l]).item(), self.update_step)
+        # z, e = self.infer(x_top, x_bot, circuit_type)
 
-            for l in range(len(e)):
-                self.tb_writer.add_scalar(f'update-step/{circuit_type}/e-{l}', torch.mean(e[l]).item(), self.update_step)
+        # if perform_write and self.tb_writer is not None:
+        #     if not(hasattr(self, 'update_step')):
+        #         self.update_step = 0
 
-            self.update_step += 1
+        #     for l in range(len(z)):
+        #         self.tb_writer.add_scalar(f'update-step/{circuit_type}/z-{l}', torch.mean(z[l]).item(), self.update_step)
+
+        #     for l in range(len(e)):
+        #         self.tb_writer.add_scalar(f'update-step/{circuit_type}/e-{l}', torch.mean(e[l]).item(), self.update_step)
+
+        #     self.update_step += 1
 
         # update
-        for l in range(self.L):
-            optimizer.zero_grad
-            # TODO: modulation matrices
-            dWl = self.phi(z[l+1]).T @ e[l]
-            dWl = dWl / (torch.norm(dWl) + c_eps)
-            W[l].grad = dWl
+        # for l in range(self.L):
+        #     optimizer.zero_grad
+        #     # TODO: modulation matrices
+        #     dWl = self.phi(z[l+1]).T @ e[l]
+        #     dWl = dWl / (torch.norm(dWl) + c_eps)
+        #     W[l].grad = dWl
 
-            if l < self.L - 1:
-                dEl = self.gamma_e * dWl.T
-                dEl = dEl / (torch.norm(dEl) + c_eps)
-                E[l].grad = dEl
-            optimizer.step()
 
-            W[l] = 2 * W[l] / (torch.norm(W[l]) + c_eps)
+        #     if l < self.L - 1:
+        #         dEl = self.gamma_e * dWl.T
+        #         dEl = dEl / (torch.norm(dEl) + c_eps)
+        #         E[l].grad = dEl
 
-            if l < self.L - 1:
-                E[l] = 2 * E[l] / (torch.norm(E[l]) + c_eps)
+        #     optimizer.step()
+
+        #     W[l].copy_(2 * W[l] / (torch.norm(W[l]) + c_eps))
+
+        #     if l < self.L - 1:
+        #         E[l].copy_(2 * E[l] / (torch.norm(E[l]) + c_eps))
 
 
     def experience_replay_update(self):
@@ -227,16 +246,16 @@ class ANGCAgent:
         # sample mini batch from replay buffer and call infer_and_update for both controller and generator
         batch = self.replay_buffer.sample(self.replay_sample_batch_size)
         for idx, (obs, action, reward, obs_next, is_terminal) in enumerate(batch):
-            target_scalar = reward if is_terminal else reward + self.discount_factor * torch.max(self.project(obs_next)).item()
+            target_scalar = reward if is_terminal else reward + self.discount_factor * torch.max(self.ngc_cont.project(obs_next)).item()
             action_oh = F.one_hot(torch.tensor(action), self.num_actions).unsqueeze_(0).to(self.device)
-            target = target_scalar * action_oh + (1 - action_oh) * self.project(obs)
+            target = target_scalar * action_oh + (1 - action_oh) * self.ngc_cont.project(obs)
 
-            perform_write = idx == self.replay_sample_batch_size - 1
+            # perform_write = idx == self.replay_sample_batch_size - 1
 
-            self.infer_and_update(obs, target, 'cont', perform_write=perform_write)
+            self.infer_and_update(obs, target, 'cont', perform_write=False)
 
             act_obs = torch.cat((action_oh, obs), dim=1).to(self.device)
-            self.infer_and_update(act_obs, obs_next, 'gen', perform_write=perform_write)
+            self.infer_and_update(act_obs, obs_next, 'gen', perform_write=False)
 
     def update_epsilon(self):
         self.eps = max(self.eps * self.eps_decay, self.eps_min)
@@ -270,9 +289,7 @@ def run_angc(trial_name, env_name, agent_config):
 
     angc_agent = ANGCAgent(agent_config, device, writer)
 
-
     epistemic_reward_max = 1
-
 
     for episode in range(num_episodes):
         print(f"Episode: {episode}")
@@ -284,18 +301,20 @@ def run_angc(trial_name, env_name, agent_config):
 
         for t in range(num_max_steps):
             action = angc_agent.act(obs)
-            obs_next, reward_instrumental, terminated, truncated, _info = env.step(action)
-            ep_inst_reward += reward_instrumental
+            obs_next, reward_instr, terminated, truncated, _info = env.step(action)
+            ep_inst_reward += reward_instr
             action_oh = F.one_hot(torch.tensor(action), num_actions).unsqueeze_(0).to(device)
             obs_next = torch.tensor(obs_next, device=device).unsqueeze_(0)
             act_obs = torch.cat((action_oh, obs), dim=1).to(device)
-            gen_states, gen_errors = angc_agent.infer(act_obs, obs_next, 'gen')
+            # gen_states, gen_errors = angc_agent.infer(act_obs, obs_next, 'gen')
+            angc_agent.ngc_gen.infer(act_obs, obs_next)
 
             # TODO: move into ANGC agent?
-            reward_epistemic = sum([torch.norm(el)**2 for el in gen_errors])
-            epistemic_reward_max = max(epistemic_reward_max, reward_epistemic)
-            reward_epistemic /= epistemic_reward_max
-            reward = angc_agent.imp_epistemic * reward_epistemic + angc_agent.imp_instrumental * reward_instrumental
+            # reward_epist = sum([torch.norm(el)**2 for el in gen_errors])
+            reward_epist = sum([torch.norm(el)**2 for el in angc_agent.ngc_gen.e])
+            epistemic_reward_max = max(epistemic_reward_max, reward_epist)
+            reward_epist /= epistemic_reward_max
+            reward = angc_agent.imp_epistemic * reward_epist + angc_agent.imp_instrumental * reward_instr
 
             ep_total_reward += reward
 
@@ -335,10 +354,10 @@ if __name__ == '__main__':
         'obs_dim': 4,
         'gen_hidden_sizes': [256, 128],
         'cont_hidden_sizes': [256, 128],
-        'T_infer': 15,
+        'K': 20,
         'beta': 0.1,
         'infer_leak': 0.001,
-        'beta_e': 0.1,
+        'beta_e': 0.5,
         'gamma_e': 0.95,
         'imp_epistemic': 1.0,
         'imp_instrumental': 1.0,
