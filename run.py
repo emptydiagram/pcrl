@@ -75,35 +75,31 @@ class ANGCAgent:
 
         gen_top_size = num_actions + obs_dim
 
-        ### generator params ###
-        # contains [W^1, ..., W^L]
-        # self.W_gen = ([self.init_weights((gen_hidden_sizes[0], obs_dim))]
-        #     + [self.init_weights((gen_hidden_sizes[i+1], gen_hidden_sizes[i])) for i in range(num_hiddens - 1)]
-        #     + [self.init_weights((gen_top_size, gen_hidden_sizes[-1]))])
+        ngc_gen_config = {
+            'L': self.L,
+            'dims': [obs_dim] + gen_hidden_sizes + [gen_top_size],
+            'weight_stddev': 0.025,
+            'beta': beta,
+            'beta_e': beta_e,
+            'gamma': infer_leak,
+            'err_update_coeff': gamma_e,
+            'fn_phi_name': 'relu',
+        }
+        # gen: (a_t, o_t) -> predicted o_{t+1}
+        self.ngc_gen = NGC(ngc_gen_config, device=device)
 
-        # # contains [E^1, ..., E^{L-1}]
-        # self.E_gen = ([self.init_weights((obs_dim, gen_hidden_sizes[0]))]
-        #     + [self.init_weights((gen_hidden_sizes[i], gen_hidden_sizes[i+1])) for i in range(num_hiddens - 1)])
-
-        # ### controller params ###
-        # self.W_cont = ([self.init_weights((cont_hidden_sizes[0], num_actions))]
-        #     + [self.init_weights((cont_hidden_sizes[i+1], cont_hidden_sizes[i])) for i in range(num_hiddens - 1)]
-        #     + [self.init_weights((obs_dim, cont_hidden_sizes[-1]))])
-
-        # self.E_cont = ([self.init_weights((num_actions, cont_hidden_sizes[0]))]
-        #     + [self.init_weights((cont_hidden_sizes[i], cont_hidden_sizes[i+1])) for i in range(num_hiddens - 1)])
-
-        self.ngc_gen = NGC(self.L, [obs_dim] + gen_hidden_sizes + [gen_top_size], weight_stddev=0.025,
-                           beta=beta, gamma=self.infer_leak, err_update_coeff=self.gamma_e, device=device)
-        self.ngc_cont = NGC(self.L, [num_actions] + cont_hidden_sizes + [obs_dim], weight_stddev=0.025,
-                            beta=beta, gamma=self.infer_leak, err_update_coeff=self.gamma_e, device=device)
-
-        if phi_name == 'relu':
-            self.phi = nn.ReLU()
-        elif phi_name == 'relu6':
-            self.phi = nn.ReLU6()
-        else:
-            raise Exception(f'phi_name {phi_name} not supported')
+        ngc_cont_config = {
+            'L': self.L,
+            'dims': [num_actions] + cont_hidden_sizes + [obs_dim],
+            'weight_stddev': 0.025,
+            'beta': beta,
+            'beta_e': beta_e,
+            'gamma': infer_leak,
+            'err_update_coeff': gamma_e,
+            'fn_phi_name': 'relu',
+        }
+        # cont: (o_t) -> predicted reward for each action
+        self.ngc_cont = NGC(ngc_cont_config, device=device)
 
         self.replay_buffer = ReplayBuffer(replay_buffer_size)
 
@@ -123,18 +119,6 @@ class ANGCAgent:
         self.tb_writer = tb_writer
 
 
-
-    # def init_weights(self, shape, stddev=0.025):
-    #     return torch.empty(shape).normal_(mean=0, std=stddev).to(self.device)
-
-    # def project(self, obs):
-    #     zbar = obs
-    #     # assume g is identity
-    #     for i in range(self.L - 1, -1, -1):
-    #         zbar = self.phi(zbar) @ self.W_cont[i]
-    #     return zbar
-
-
     def act(self, obs):
         # generate random probability
         p = random.random()
@@ -147,40 +131,6 @@ class ANGCAgent:
 
         return action
 
-    # def infer(self, x_top, x_bot, circuit_type):
-    #     assert circuit_type in ['cont', 'gen']
-    #     if circuit_type == 'gen':
-    #         W = self.W_gen
-    #         E = self.E_gen
-    #         hidden_sizes = self.gen_hidden_sizes
-    #         e_top_size = self.num_actions + self.obs_dim
-    #     else:
-    #         W = self.W_cont
-    #         E = self.E_cont
-    #         hidden_sizes = self.cont_hidden_sizes
-    #         e_top_size = self.obs_dim
-
-    #     # init
-    #     z = [x_bot]
-    #     e = [x_bot - 0.]
-    #     for hidden_size in hidden_sizes:
-    #         z.append(torch.zeros((1, hidden_size)).to(self.device))
-    #         e.append(torch.zeros((1, hidden_size)).to(self.device))
-    #     z.append(x_top)
-    #     e.append(torch.zeros((1, e_top_size)).to(self.device))
-
-    #     for k in range(self.T_infer):
-
-    #         # for l = 1, ..., L-1
-    #         for l in range(1, self.L):
-    #             z[l] += self.beta * (- self.infer_leak * z[l] - e[l] + e[l-1] @ E[l-1])
-
-    #         # for l = L - 1, ..., 0
-    #         for l in range(self.L - 1, -1, -1):
-    #             zbar = self.phi(z[l+1]) @ W[l]
-    #             e[l] = (self.phi(z[l]) - zbar) / (2 * self.beta_e)
-
-    #     return z, e[:self.L]
 
     def infer_and_update(self, x_top, x_bot, circuit_type, perform_write=False, c_eps=1e-6):
         assert circuit_type in ['cont', 'gen']
@@ -195,11 +145,11 @@ class ANGCAgent:
             optimizer = self.optimizer_cont
             ngc_circuit = self.ngc_cont
 
-        ngc_circuit.infer(x_top, x_bot)
+        ngc_circuit.infer(x_bot, x_top)
         optimizer.zero_grad()
         ngc_circuit.calc_updates()
         optimizer.step()
-        ngc_circuit.clip_weights()
+        ngc_circuit.normalize_weights()
 
 
         # z, e = self.infer(x_top, x_bot, circuit_type)
@@ -313,8 +263,7 @@ def run_angc(trial_name, env_name, agent_config):
             action_oh = F.one_hot(torch.tensor(action), num_actions).unsqueeze_(0).to(device)
             obs_next = torch.tensor(obs_next, device=device).unsqueeze_(0)
             act_obs = torch.cat((action_oh, obs), dim=1).to(device)
-            # gen_states, gen_errors = angc_agent.infer(act_obs, obs_next, 'gen')
-            angc_agent.ngc_gen.infer(act_obs, obs_next)
+            angc_agent.ngc_gen.infer(obs_next, act_obs)
 
             # TODO: move into ANGC agent?
             # reward_epist = sum([torch.norm(el)**2 for el in gen_errors])
