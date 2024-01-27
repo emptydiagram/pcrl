@@ -83,11 +83,14 @@ class ProspConfigNet:
         e = [None for _ in range(self.L)]
 
         # using row-vector convention (1-d vectors are row vectors), so
-        #  - x_in is (B x d_L)
+        #  - z^L = x_in is (B x d_L)
         #  - z^l, p^l, e^l are (B x d_l)
-        #  - x_out is (B x d_0)
+        #  - z^0 = x_out is (B x d_0)
 
-        # p^l = phi(z^{l+1}) W^{l+1}
+        # for l = 0, ..., L-2:
+        #   p^l = phi(z^{l+1}) W^{l+1}
+        # p^{L-1} = z^L W^L
+
         # e^l = z^l - p^l
         # E^l = (1/2) * ||e^l||^2
         # E = Σ_l E^l = (1/2) Σ_l ||e^l||^2
@@ -106,14 +109,18 @@ class ProspConfigNet:
         E = None
         for t in range(self.T_max):
             # prediction errors
-            for l in range(0, self.L):
+            for l in range(0, self.L-1):
                 a[l+1] = self.fn_act(z[l+1])
                 pl = a[l+1] @ self.W[l]
                 e[l] = z[l] - pl
+            # use identity activation function for the input
+            a[self.L] = z[self.L]
+            pl = a[self.L] @ self.W[self.L - 1]
+            e[self.L - 1] = z[self.L - 1] - pl
 
             # relaxation step
             for l in range(1, self.L):
-                z[l] += lambda_ * (-e[l] + self.fn_act_deriv(z[l], a[l]) * (e[l-1] @ self.W[l-1].T))
+                z[l] -= lambda_ * (e[l] - self.fn_act_deriv(z[l], a[l]) * (e[l-1] @ self.W[l-1].T))
 
             if self.use_relax_early_stopping:
                 prev_E = E
