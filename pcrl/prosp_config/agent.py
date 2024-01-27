@@ -54,9 +54,9 @@ class ProspConfigNet:
         return self.W
 
     def project(self, x_in):
-        z = x_in
-        zs = []
-        for l in range(self.L - 1, -1, -1):
+        z = x_in @ self.W[self.L - 1]
+        zs = [z]
+        for l in range(self.L - 2, -1, -1):
             z = self.fn_act(z) @ self.W[l]
             zs.append(z)
         zs.reverse()
