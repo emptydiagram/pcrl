@@ -1,4 +1,4 @@
-from ..utils import get_activation_fn, get_activation_fn_deriv, init_gaussian
+from ..utils import get_activation_fn, get_activation_fn_deriv, init_gaussian, init_uniform
 
 from operator import itemgetter
 import random
@@ -45,25 +45,28 @@ class ProspConfigNet:
         if weight_init['type'] == 'gaussian_fixed_stddev':
             weight_stddev = weight_init['stddev']
             make_weights = lambda d1, d2: init_gaussian([d1, d2], weight_stddev, self.device)
+        elif weight_init['type'] == 'kaiming_uniform':
+            make_weights = lambda d1, d2: init_uniform([d1, d2], -1.0/(d1**0.5), 1.0/(d1**0.5), self.device)
         else:
             raise NotImplementedError(f"Weight initialization type {weight_init['type']} not recognized.")
 
         self.W = [make_weights(dims[l+1], dims[l]) for l in range(L)]
+        self.b = [torch.zeros([1, dims[l]], device=self.device) for l in range(L)]
 
     def parameters(self):
-        return self.W
+        return self.W + self.b
 
     def project(self, x_in):
-        z = x_in @ self.W[self.L - 1]
+        z = x_in @ self.W[self.L - 1] + self.b[self.L - 1]
         zs = [z]
         for l in range(self.L - 2, -1, -1):
-            z = self.fn_act(z) @ self.W[l]
+            z = self.fn_act(z) @ self.W[l] + self.b[l]
             zs.append(z)
         zs.reverse()
         return zs
 
 
-    def settle(self, x_in, x_out):
+    def settle(self, x_in, x_out, e_out_mask):
         # using NGC convention here, where the top layer, z^L, is the input, and z^0 is the output
         # the prospective configuration paper uses the opposite convention
         batch_size = x_in.shape[0]
@@ -73,11 +76,12 @@ class ProspConfigNet:
                 z.append(torch.zeros([batch_size, self.dims[l]], device=self.device))
         elif self.settle_init_type == 'projection':
             proj_z = self.project(x_in)
-            for l in range(self.L - 1):
+            for l in range(1, self.L):
                 z.append(proj_z[l])
         else:
             raise NotImplementedError(f"Settle initialization type {self.settle_init_type} not recognized.")
         z.append(x_in)
+
 
         a = [None for _ in range(len(z))]
         e = [None for _ in range(self.L)]
@@ -88,8 +92,8 @@ class ProspConfigNet:
         #  - z^0 = x_out is (B x d_0)
 
         # for l = 0, ..., L-2:
-        #   p^l = phi(z^{l+1}) W^{l+1}
-        # p^{L-1} = z^L W^L
+        #   p^l = phi(z^{l+1}) W^{l+1} + b^{l+1}
+        # p^{L-1} = z^L W^L + b^L
 
         # e^l = z^l - p^l
         # E^l = (1/2) * ||e^l||^2
@@ -109,13 +113,16 @@ class ProspConfigNet:
         E = None
         for t in range(self.T_max):
             # prediction errors
-            for l in range(0, self.L-1):
+            a[1] = self.fn_act(z[1])
+            pl = a[1] @ self.W[0] + self.b[0]
+            e[0] = (z[0] - pl) * e_out_mask
+            for l in range(1, self.L-1):
                 a[l+1] = self.fn_act(z[l+1])
-                pl = a[l+1] @ self.W[l]
+                pl = a[l+1] @ self.W[l] + self.b[l]
                 e[l] = z[l] - pl
             # use identity activation function for the input
             a[self.L] = z[self.L]
-            pl = a[self.L] @ self.W[self.L - 1]
+            pl = a[self.L] @ self.W[self.L - 1] + self.b[self.L - 1]
             e[self.L - 1] = z[self.L - 1] - pl
 
             # relaxation step
@@ -139,8 +146,10 @@ class ProspConfigNet:
 
     def calc_weight_updates(self):
         # dE/dW^l = dE^{l-1}/dW^l = -phi(z^l)^T * e^{l-1}
+        # dE/db^l = dE^{l-1}/db^l = -e^{l-1}
         for l in range(self.L):
             self.W[l].grad = -self.a[l+1].T @ self.e[l]
+            self.b[l].grad = -torch.sum(self.e[l], dim=0, keepdim=True)
 
 
 class ProspConfigAgent:
@@ -197,10 +206,11 @@ class ProspConfigAgent:
             rewards = torch.tensor(rewards, device=self.device).unsqueeze_(1)
             obses_next = torch.vstack(obses_next).to(self.device)
             is_dones = torch.tensor(is_dones, dtype=torch.float32, device=self.device).unsqueeze_(1)
+
             estimated_next_rewards = self.q_net.project(obses_next)[0]
             max_next_rewards = torch.max(estimated_next_rewards, dim=1).values.unsqueeze_(1)
             target_reward_scalars = rewards + self.discount_factor * (1 - is_dones) * max_next_rewards
             target_rewards = target_reward_scalars * acts
-            self.q_net.settle(obses, target_rewards)
+            self.q_net.settle(obses, target_rewards, acts)
             self.q_net.calc_weight_updates()
             self.optimizer.step()
