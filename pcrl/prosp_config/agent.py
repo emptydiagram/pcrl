@@ -176,6 +176,8 @@ class ProspConfigAgent:
 
         if optimizer_type == 'sgd':
             self.optimizer = torch.optim.SGD(self.q_net.parameters(), lr=optimizer_lr)
+        elif optimizer_type == 'adam':
+            self.optimizer = torch.optim.Adam(self.q_net.parameters(), lr=optimizer_lr)
         else:
             raise NotImplementedError(f"Optimizer type {optimizer_type} not recognized.")
 

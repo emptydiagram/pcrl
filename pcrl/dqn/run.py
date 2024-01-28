@@ -147,7 +147,7 @@ def run_dqn(run_config, agent_config):
         agent.learn()
 
         if (ep + 1) % score_period == 0:
-            print(f"Episodes {ep}: average reward = {score / score_period}, eps = {(agent.eps * 100):.2f}%")
+            print(f"Episode {ep+1}: average reward = {score / score_period}, eps = {(agent.eps * 100):.2f}%")
             score = 0.
 
 
@@ -173,7 +173,7 @@ if __name__ == '__main__':
         'fn_act': 'sigmoid',
         'num_learn_epochs': 10,
         'optimizer_type': 'adam',
-        'optimizer_lr': 0.0005,
+        'optimizer_lr': 0.0001,
         'replay_buffer_capacity': 50000,
         'replay_buffer_learn_thresh': 2000
     }

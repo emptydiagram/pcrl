@@ -44,7 +44,7 @@ def run_pc(run_config, agent_config):
         agent.learn()
 
         if (ep + 1) % score_period == 0:
-            print(f"Episodes {ep}: average reward = {score / score_period}, eps = {(agent.eps * 100):.2f}%")
+            print(f"Episode {ep+1}: average reward = {score / score_period}, ε = {(agent.eps * 100):.2f}%")
             score = 0.
 
 
